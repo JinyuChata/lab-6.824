@@ -2,6 +2,7 @@ package mr
 
 import (
 	"log"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -13,6 +14,8 @@ import "net/http"
 type SerialLog struct {
 	sTime time.Time
 	sType string // map | reduce
+
+	workerDesc WorkerAskReply
 }
 
 type Master struct {
@@ -40,8 +43,12 @@ type Master struct {
 	finishedRed int
 	// all mapper/reducer serial
 	serial    int
-	serialMap map[int]SerialLog
 	serialMux sync.Mutex
+
+	serialMap map[int]SerialLog
+	livingSet map[int]bool
+	diedSet   map[int]bool
+	logMux    sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -65,12 +72,18 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (m *Master) WorkerFinish(args *WorkerReportArgs, reply *WorkerReportReply) error {
+	//m.logMux.Lock()
+	//if _, ok := m.livingSet[args.Serial]; !ok {
+	//	// crashed, 忽略
+	//	m.logMux.Unlock()
+	//	return nil
+	//}
+	//m.logMux.Unlock()
 	success := args.Success
 	//Serial := args.Serial
 	filePaths := args.FilePaths
 	taskType := args.TaskType
 	if taskType == "map" {
-		// TODO Map
 		//MapperNo := args.MapperNo
 		if !success {
 			// TODO Mapper失败... 重试
@@ -81,7 +94,6 @@ func (m *Master) WorkerFinish(args *WorkerReportArgs, reply *WorkerReportReply) 
 		m.imFiles = append(m.imFiles, filePaths...)
 		m.wmMux.Unlock()
 	} else if taskType == "reduce" {
-		// TODO Map
 		//ReducerNo := args.ReducerNo
 		if !success {
 			// TODO Reducer失败... 重试
@@ -108,7 +120,30 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 	}
 	PrintLog("Register Work!")
 
+	// 失败的map/reduce 重启
+	//m.logMux.Lock()
+	//if len(m.diedSet) > 0 {
+	//	toRestart := -1
+	//	for toRestart = range m.diedSet {
+	//		*reply = m.serialMap[toRestart].workerDesc
+	//		reply.Serial = m.NextSerial()
+	//		m.livingSet[reply.Serial] = true
+	//		m.serialMap[reply.Serial] = SerialLog{
+	//			sTime:      time.Now(),
+	//			sType:      reply.TaskType,
+	//			workerDesc: *reply,
+	//		}
+	//		m.livingSet[reply.Serial] = true
+	//		break
+	//	}
+	//	delete(m.diedSet, toRestart)
+	//	m.logMux.Unlock()
+	//	return nil
+	//}
+	//m.logMux.Unlock()
+
 	m.filesMux.Lock()
+
 	if len(m.files) > 0 {
 		// 分配到map
 		toAllocateSize := m.filePerMap
@@ -125,10 +160,21 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 		reply.MapperNo = m.workingMap
 		m.workingMap++
 		m.wmMux.Unlock()
+		PrintLog("Master start Mapper " + strconv.Itoa(reply.Serial))
 		reply.TaskType = "map"
 		reply.FilePaths = allocateFiles
 		reply.TotReduce = m.nReduce
 		reply.Serial = m.NextSerial()
+
+		// 注册log
+		//m.logMux.Lock()
+		//m.serialMap[reply.Serial] = SerialLog{
+		//	sTime:      time.Now(),
+		//	sType:      "map",
+		//	workerDesc: *reply,
+		//}
+		//m.livingSet[reply.Serial] = true
+		//m.logMux.Unlock()
 	} else {
 		m.filesMux.Unlock()
 		// map 已经全部分出去了，现在分reduce
@@ -153,11 +199,20 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 					reply.FilePaths = m.imFiles
 					reply.Serial = m.NextSerial()
 					m.reMux.Unlock()
+
+					// 注册log
+					//m.logMux.Lock()
+					//m.serialMap[reply.Serial] = SerialLog{
+					//	sTime:      time.Now(),
+					//	sType:      "reduce",
+					//	workerDesc: *reply,
+					//}
+					//m.livingSet[reply.Serial] = true
+					//m.logMux.Unlock()
 				} else {
 					// 不需要 reducer
 					reply.TaskType = "wait"
 					m.reMux.Unlock()
-
 				}
 				break
 			}
@@ -182,6 +237,28 @@ func (m *Master) server() {
 	go http.Serve(l, nil)
 }
 
+func (m *Master) monitor() {
+	go func() {
+		for true {
+			m.logMux.Lock()
+			t := time.Now()
+			toDel := make(map[int]bool)
+			for k := range m.livingSet {
+				if t.Sub(m.serialMap[k].sTime) > 10*time.Second {
+					m.diedSet[k] = true
+					toDel[k] = true
+				}
+			}
+			for k := range toDel {
+				delete(m.livingSet, k)
+			}
+			PrintLog("Delete " + strconv.Itoa(len(toDel)) + " Tasks")
+			m.logMux.Unlock()
+			time.Sleep(time.Millisecond * 1000)
+		}
+	}()
+}
+
 //
 // main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
@@ -203,6 +280,8 @@ func MakeMaster(files []string, nReduce int) *Master {
 		m.done = true
 	} else {
 		m.serialMap = make(map[int]SerialLog)
+		m.livingSet = make(map[int]bool)
+		m.diedSet = make(map[int]bool)
 		m.done = false
 		m.nReduce = nReduce
 		m.toReduce = nReduce
