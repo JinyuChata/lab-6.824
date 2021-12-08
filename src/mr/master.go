@@ -29,13 +29,14 @@ type Master struct {
 	filePerMap int
 	// to mappers
 	files    []string
-	toMap    int
 	filesMux sync.Mutex
 	// from working mappers
-	workingMap int
-	wmStart    bool
-	imFiles    []string
-	wmMux      sync.Mutex
+	workingMap  int
+	wmStart     bool
+	imFiles     []string
+	toMap       int
+	finishedMap int
+	wmMux       sync.Mutex
 	// to reducers
 	toReduce int
 	reMux    sync.Mutex
@@ -76,9 +77,10 @@ func (m *Master) WorkerFinish(args *WorkerReportArgs, reply *WorkerReportReply) 
 	m.logMux.Lock()
 	if _, ok := m.livingSet[args.Serial]; !ok {
 		// crashed, 忽略
-		PrintLog("Ignore Crashed Return " + strconv.Itoa(args.Serial))
 		m.logMux.Unlock()
 		return nil
+	} else {
+		delete(m.livingSet, args.Serial)
 	}
 	m.logMux.Unlock()
 
@@ -86,14 +88,17 @@ func (m *Master) WorkerFinish(args *WorkerReportArgs, reply *WorkerReportReply) 
 	//Serial := args.Serial
 	filePaths := args.FilePaths
 	taskType := args.TaskType
+
 	if taskType == "map" {
 		//MapperNo := args.MapperNo
 		if !success {
 			// TODO Mapper失败... 重试
 			return nil
 		}
+		PrintLog2("MAP SUCCESS " + strconv.Itoa(args.MapperNo))
 		m.wmMux.Lock()
 		m.workingMap--
+		m.finishedMap++
 		m.imFiles = append(m.imFiles, filePaths...)
 		m.wmMux.Unlock()
 	} else if taskType == "reduce" {
@@ -102,6 +107,7 @@ func (m *Master) WorkerFinish(args *WorkerReportArgs, reply *WorkerReportReply) 
 			// TODO Reducer失败... 重试
 			return nil
 		}
+		PrintLog2("REDUCE SUCCESS " + strconv.Itoa(args.ReducerNo))
 		m.finishedRed++
 		if m.finishedRed == m.nReduce {
 			m.doneMux.Lock()
@@ -164,15 +170,16 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 		}
 		allocateFiles := m.files[0:toAllocateSize]
 		m.files = m.files[toAllocateSize:]
-		reply.MapperNo = m.toMap
-		m.toMap++
-		m.filesMux.Unlock()
 
 		// 返回一个map命令
 		m.wmMux.Lock()
 		m.wmStart = true
 		m.workingMap++
+		reply.MapperNo = m.toMap
+		m.toMap++
 		m.wmMux.Unlock()
+		m.filesMux.Unlock()
+
 		PrintLog("Master start Mapper " + strconv.Itoa(reply.MapperNo))
 		reply.TaskType = "map"
 		reply.FilePaths = allocateFiles
@@ -190,12 +197,17 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 		m.logMux.Unlock()
 	} else {
 		PrintLog("Try Reduce... " + args.Name)
+		if len(m.files) > 0 {
+			m.filesMux.Unlock()
+			reply.TaskType = "wait"
+			return nil
+		}
 		m.filesMux.Unlock()
 		// map 已经全部分出去了，现在分reduce
 		for true {
 			m.wmMux.Lock()
 			// mapping 是否已经结束?
-			if !m.wmStart || m.workingMap > 0 {
+			if !m.wmStart || !(m.finishedMap == m.toMap) {
 				// mapping 未结束
 				m.wmMux.Unlock()
 				reply.TaskType = "wait"
@@ -203,6 +215,7 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 			} else {
 				// mapping 已结束
 				m.wmMux.Unlock()
+				PrintLog2("Hi Try Reduce Again...")
 				m.reMux.Lock()
 				// reduce 是否已经结束?
 				if m.toReduce > 0 {
@@ -226,6 +239,7 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 					m.logMux.Unlock()
 				} else {
 					// 不需要 reducer
+					PrintLog("No Need Reduce Again...")
 					reply.TaskType = "wait"
 					m.reMux.Unlock()
 				}
@@ -259,7 +273,7 @@ func (m *Master) monitor() {
 			t := time.Now()
 			toDel := make(map[int]bool)
 			for k := range m.livingSet {
-				if t.Sub(m.serialMap[k].sTime) > 10*time.Second {
+				if t.Sub(m.serialMap[k].sTime) > 12*time.Second {
 					typo := m.serialMap[k].workerDesc.TaskType
 					if typo == "map" {
 						PrintLog("Monitor: REMOVE Crashed MAP " + strconv.Itoa(m.serialMap[k].workerDesc.MapperNo))
@@ -273,7 +287,6 @@ func (m *Master) monitor() {
 			for k := range toDel {
 				delete(m.livingSet, k)
 			}
-			PrintLog("Delete " + strconv.Itoa(len(toDel)) + " Tasks")
 			m.logMux.Unlock()
 			time.Sleep(time.Millisecond * 1000)
 		}
@@ -307,7 +320,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 		m.nReduce = nReduce
 		m.toReduce = nReduce
 		m.nMap = nReduce * 4 // 最多几个mapper
-		//m.nMap = 1
+		//m.nMap = 2
 		m.filePerMap = len(files) / m.nMap
 		m.files = files
 		if m.nMap*m.filePerMap < len(files) {

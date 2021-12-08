@@ -22,6 +22,7 @@ func maybeCrash() {
 	rr, _ := crand.Int(crand.Reader, max)
 	if rr.Int64() < 330 {
 		// crash!
+		mr.PrintLog("CRASH!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 		os.Exit(1)
 	} else if rr.Int64() < 660 {
 		// delay for a while.
@@ -33,7 +34,7 @@ func maybeCrash() {
 
 func Map(filename string, contents string) []mr.KeyValue {
 	maybeCrash()
-
+	mr.PrintLog("MAPPPPPPPPPPPPPPPP: " + filename)
 	kva := []mr.KeyValue{}
 	kva = append(kva, mr.KeyValue{"a", filename})
 	kva = append(kva, mr.KeyValue{"b", strconv.Itoa(len(filename))})
