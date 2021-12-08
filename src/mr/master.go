@@ -29,6 +29,7 @@ type Master struct {
 	filePerMap int
 	// to mappers
 	files    []string
+	toMap    int
 	filesMux sync.Mutex
 	// from working mappers
 	workingMap int
@@ -72,13 +73,15 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (m *Master) WorkerFinish(args *WorkerReportArgs, reply *WorkerReportReply) error {
-	//m.logMux.Lock()
-	//if _, ok := m.livingSet[args.Serial]; !ok {
-	//	// crashed, 忽略
-	//	m.logMux.Unlock()
-	//	return nil
-	//}
-	//m.logMux.Unlock()
+	m.logMux.Lock()
+	if _, ok := m.livingSet[args.Serial]; !ok {
+		// crashed, 忽略
+		PrintLog("Ignore Crashed Return " + strconv.Itoa(args.Serial))
+		m.logMux.Unlock()
+		return nil
+	}
+	m.logMux.Unlock()
+
 	success := args.Success
 	//Serial := args.Serial
 	filePaths := args.FilePaths
@@ -118,64 +121,75 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 		reply.TaskType = "wait"
 		return nil
 	}
-	PrintLog("Register Work!")
+	PrintLog("Register Work! " + args.Name)
 
 	// 失败的map/reduce 重启
-	//m.logMux.Lock()
-	//if len(m.diedSet) > 0 {
-	//	toRestart := -1
-	//	for toRestart = range m.diedSet {
-	//		*reply = m.serialMap[toRestart].workerDesc
-	//		reply.Serial = m.NextSerial()
-	//		m.livingSet[reply.Serial] = true
-	//		m.serialMap[reply.Serial] = SerialLog{
-	//			sTime:      time.Now(),
-	//			sType:      reply.TaskType,
-	//			workerDesc: *reply,
-	//		}
-	//		m.livingSet[reply.Serial] = true
-	//		break
-	//	}
-	//	delete(m.diedSet, toRestart)
-	//	m.logMux.Unlock()
-	//	return nil
-	//}
-	//m.logMux.Unlock()
+	m.logMux.Lock()
+	PrintLog("Try ReStart Task... " + args.Name)
+	if len(m.diedSet) > 0 {
+		PrintLog("To ReStart Task... " + args.Name)
+		if reply.TaskType == "map" {
+			PrintLog("Re-start crashed MAP {" + strconv.Itoa(reply.MapperNo) + "} ")
+		} else if reply.TaskType == "reduce" {
+			PrintLog("Re-start crashed REDUCE {" + strconv.Itoa(reply.ReducerNo) + "} ")
+		}
+		toRestart := -1
+		for toRestart = range m.diedSet {
+			*reply = m.serialMap[toRestart].workerDesc
+			reply.Serial = m.NextSerial()
+			m.livingSet[reply.Serial] = true
+			m.serialMap[reply.Serial] = SerialLog{
+				sTime:      time.Now(),
+				sType:      reply.TaskType,
+				workerDesc: *reply,
+			}
+			m.livingSet[reply.Serial] = true
+			break
+		}
+		delete(m.diedSet, toRestart)
+		m.logMux.Unlock()
+		return nil
+	}
+	m.logMux.Unlock()
 
+	PrintLog("No Restarted Task... " + args.Name)
 	m.filesMux.Lock()
 
 	if len(m.files) > 0 {
 		// 分配到map
+		PrintLog("Try Map... " + args.Name)
 		toAllocateSize := m.filePerMap
 		if len(m.files) < toAllocateSize {
 			toAllocateSize = len(m.files)
 		}
 		allocateFiles := m.files[0:toAllocateSize]
 		m.files = m.files[toAllocateSize:]
+		reply.MapperNo = m.toMap
+		m.toMap++
 		m.filesMux.Unlock()
 
 		// 返回一个map命令
 		m.wmMux.Lock()
 		m.wmStart = true
-		reply.MapperNo = m.workingMap
 		m.workingMap++
 		m.wmMux.Unlock()
-		PrintLog("Master start Mapper " + strconv.Itoa(reply.Serial))
+		PrintLog("Master start Mapper " + strconv.Itoa(reply.MapperNo))
 		reply.TaskType = "map"
 		reply.FilePaths = allocateFiles
 		reply.TotReduce = m.nReduce
 		reply.Serial = m.NextSerial()
 
-		// 注册log
-		//m.logMux.Lock()
-		//m.serialMap[reply.Serial] = SerialLog{
-		//	sTime:      time.Now(),
-		//	sType:      "map",
-		//	workerDesc: *reply,
-		//}
-		//m.livingSet[reply.Serial] = true
-		//m.logMux.Unlock()
+		//注册log
+		m.logMux.Lock()
+		m.serialMap[reply.Serial] = SerialLog{
+			sTime:      time.Now(),
+			sType:      "map",
+			workerDesc: *reply,
+		}
+		m.livingSet[reply.Serial] = true
+		m.logMux.Unlock()
 	} else {
+		PrintLog("Try Reduce... " + args.Name)
 		m.filesMux.Unlock()
 		// map 已经全部分出去了，现在分reduce
 		for true {
@@ -184,7 +198,8 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 			if !m.wmStart || m.workingMap > 0 {
 				// mapping 未结束
 				m.wmMux.Unlock()
-				time.Sleep(time.Millisecond * 100)
+				reply.TaskType = "wait"
+				break
 			} else {
 				// mapping 已结束
 				m.wmMux.Unlock()
@@ -201,14 +216,14 @@ func (m *Master) WorkerRegister(args *WorkerAskArgs, reply *WorkerAskReply) erro
 					m.reMux.Unlock()
 
 					// 注册log
-					//m.logMux.Lock()
-					//m.serialMap[reply.Serial] = SerialLog{
-					//	sTime:      time.Now(),
-					//	sType:      "reduce",
-					//	workerDesc: *reply,
-					//}
-					//m.livingSet[reply.Serial] = true
-					//m.logMux.Unlock()
+					m.logMux.Lock()
+					m.serialMap[reply.Serial] = SerialLog{
+						sTime:      time.Now(),
+						sType:      "reduce",
+						workerDesc: *reply,
+					}
+					m.livingSet[reply.Serial] = true
+					m.logMux.Unlock()
 				} else {
 					// 不需要 reducer
 					reply.TaskType = "wait"
@@ -245,6 +260,12 @@ func (m *Master) monitor() {
 			toDel := make(map[int]bool)
 			for k := range m.livingSet {
 				if t.Sub(m.serialMap[k].sTime) > 10*time.Second {
+					typo := m.serialMap[k].workerDesc.TaskType
+					if typo == "map" {
+						PrintLog("Monitor: REMOVE Crashed MAP " + strconv.Itoa(m.serialMap[k].workerDesc.MapperNo))
+					} else if typo == "reduce" {
+						PrintLog("Monitor: REMOVE Crashed REDUCE " + strconv.Itoa(m.serialMap[k].workerDesc.ReducerNo))
+					}
 					m.diedSet[k] = true
 					toDel[k] = true
 				}
@@ -292,8 +313,10 @@ func MakeMaster(files []string, nReduce int) *Master {
 		if m.nMap*m.filePerMap < len(files) {
 			m.filePerMap += 1
 		}
+		PrintLog("MASTER file per map: " + strconv.Itoa(m.filePerMap))
 	}
 	PrintLog("Start Master...")
+	m.monitor()
 	m.server()
 	return &m
 }

@@ -145,15 +145,15 @@ func Worker(mapf func(string, string) []KeyValue,
 				break
 			}
 		} else {
-			// wait 300ms
-			time.Sleep(time.Millisecond * 100)
+			PrintLog("Worker Wait 500ms...")
+			time.Sleep(time.Millisecond * 500)
 		}
 	}
 }
 
 // call register
 func CallRegister() (WorkerAskReply, bool) {
-	args := WorkerAskArgs{}
+	args := WorkerAskArgs{Name: strconv.Itoa(os.Getpid())}
 	reply := WorkerAskReply{}
 	succ := call("Master.WorkerRegister", &args, &reply)
 	return reply, succ
