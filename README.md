@@ -7,7 +7,7 @@ go版本: 1.13+
 - 在高于1.11的版本中报`unexpected directory layout`, 但是用较低版本goLand无法调试...
   - unexpected dir layout 原因是不支持`相对路径包引入`, 遇到时`在import 删掉../即可`
 
-### idea 准备
+### GoLand 准备
 
 - 下载go 1.11.x
 
@@ -17,7 +17,7 @@ go版本: 1.13+
 
   ![image-20211202180837767](https://cse2020-dune.oss-cn-shanghai.aliyuncs.com/20211202180838.png)
 
-### Lab 1
+## 1. Run Lab 1
 
 命令行运行步骤:
 
@@ -63,6 +63,3 @@ $ more mr-out-0
    - 调试与运行均正常
 
      ![image-20211202181144252](https://cse2020-dune.oss-cn-shanghai.aliyuncs.com/20211202181145.png)
-
-## 1. Lab 1
-
