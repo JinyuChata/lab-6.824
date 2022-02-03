@@ -63,3 +63,14 @@ $ more mr-out-0
    - 调试与运行均正常
 
      ![image-20211202181144252](https://cse2020-dune.oss-cn-shanghai.aliyuncs.com/20211202181145.png)
+
+
+## 2. Run Lab 2
+
+### Lab 2A
+
+(go v1.17环境下) 删除`src/labrpc/labprc.go`, `src/raft/config.go`, `src/raft/raft.go`, `src/labgob/labgob.go` 中 import 语句的 `../`
+即可解决 unexpected directory layout 问题
+
+GoLand 运行lab 2a:
+![](https://cse2020-dune.oss-cn-shanghai.aliyuncs.com/20220203110232.png)
