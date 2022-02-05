@@ -204,9 +204,8 @@ func (rf *Raft) SwitchState(s ServerState) {
 				go func(i int) {
 					rf.mu.Lock()
 					requestVoteArg := RequestVoteArgs{
-						Term:        rf.currentTerm,
-						CandidateId: rf.me,
-						// TODO: 2b
+						Term:         rf.currentTerm,
+						CandidateId:  rf.me,
 						LastLogIndex: len(rf.log) - 1,
 						LastLogTerm:  rf.log[len(rf.log)-1].TermId,
 					}
@@ -434,8 +433,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 4. 如果 leader 复制的日志本地没有，则直接追加存储。
 	// 5. 如果 leaderCommit>commitIndex，
 	//    设置本地 commitIndex 为 leaderCommit 和最新日志索引中 较小的一个。
-	// TODO: 2B
-	// 2A: 仅考虑心跳包
 	rf.mu.Lock()
 	switch rf.serverState {
 	case Follower:
@@ -672,8 +669,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		rf.mu.Unlock()
 	} else if args.Term > rf.currentTerm {
-		// TODO 2b, 候选者日志和本地日志相同比较
-
 		if rf.serverState != Follower {
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
