@@ -932,15 +932,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					}
 					rf.printfLn("**** Apply: %v: %v", _logIndex, _command)
 
-					//go func(cmd interface{}, li int) {
-					//	rf.applyChan <- ApplyMsg{
-					//		CommandValid: true,
-					//		Command:      cmd,
-					//		CommandIndex: li,
-					//	}
-					//	rf.printfLn("**** Apply: %v: %v", li, cmd)
-					//}(_command, _logIndex)
-
 				} else {
 					rf.mu.Unlock()
 					break
