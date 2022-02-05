@@ -18,7 +18,9 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
+	"labgob"
 	"log"
 	"strconv"
 	"sync"
@@ -224,6 +226,7 @@ func (rf *Raft) SwitchState(s ServerState) {
 						rf.mu.Lock()
 						if requestVoteReply.Term > rf.currentTerm {
 							voteTerm = requestVoteReply.Term
+							rf.persist()
 						}
 						rf.mu.Unlock()
 					}
@@ -375,12 +378,21 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+
+	logs := make([]LogEntry, len(rf.log))
+	for index, l := range rf.log {
+		logs[index] = *l
+	}
+
+	e.Encode(logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+
+	rf.printfLn("******** PERSIST ********")
 }
 
 //
@@ -392,17 +404,27 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm, votedFor int
+	var logs []LogEntry
+
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&logs) != nil {
+		DPrintf("%v fails to recover from persist", rf)
+		return
+	}
+
+	rf.currentTerm = currentTerm
+	rf.votedFor = votedFor
+	rf.log = make([]*LogEntry, len(logs))
+	for index, l := range logs {
+		tmp := l
+		rf.log[index] = &tmp
+	}
+
+	rf.printfLn("******** READ PERSIST ********")
 }
 
 /* AppendEntries */
@@ -440,6 +462,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.Term < rf.currentTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		} else if args.Term == rf.currentTerm {
@@ -454,12 +478,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.printfLn("arg.PrevIndex=%d, rf.log.size=%d", args.PrevLogIndex, len(rf.log))
 			if args.PrevLogIndex >= len(rf.log) {
 				reply.Success = false
+				rf.printfLn("Return False 1")
+
+				rf.persist()
 				rf.mu.Unlock()
 				return
 			} else if rf.log[args.PrevLogIndex].TermId != args.PrevLogTerm {
 				reply.Success = false
+				rf.printfLn("Return False 2")
 				// delete the existing entry and all that follow it
 				rf.log = rf.log[0:args.PrevLogIndex]
+
+				rf.persist()
 				rf.mu.Unlock()
 				return
 			}
@@ -485,15 +515,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					rf.commitIndex = len(rf.log) - 1
 				}
 			}
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		} else {
+			rf.printfLn("Return False 3")
 			reply.Success = false
 			reply.Term = rf.currentTerm
 
 			rf.followingLeader = true
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		}
@@ -502,6 +537,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.Term < rf.currentTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		} else {
@@ -512,6 +549,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
 			rf.SwitchState(Follower)
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		}
@@ -520,10 +559,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.Term < rf.currentTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		} else if args.Term == rf.currentTerm {
 			log.Fatalf("Error! same currentTerm " + string(rune(rf.currentTerm)))
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		} else {
@@ -535,6 +578,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
 			rf.SwitchState(Follower)
+
+			rf.persist()
 			rf.mu.Unlock()
 			return
 		}
@@ -595,7 +640,7 @@ func AppendEntriesRoutine(rf *Raft, i int) (bool, *AppendEntriesReply) {
 			rf.nextIndex[i] = newNextIndex
 			rf.matchIndex[i] = newNextIndex - 1
 		}
-		rf.printfLn("From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
+		rf.printfLn("1From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
 		rf.mu.Unlock()
 		return true, reply
 	} else {
@@ -604,12 +649,13 @@ func AppendEntriesRoutine(rf *Raft, i int) (bool, *AppendEntriesReply) {
 			// 转换为Follower
 			rf.currentTerm = reply.Term
 			rf.SwitchState(Follower)
-			rf.printfLn("From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
+			rf.printfLn("2From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
+			rf.persist()
 			rf.mu.Unlock()
 			return false, reply
 		} else if reply.Term < rf.currentTerm {
 			// retry, 不变nextIndex
-			rf.printfLn("From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
+			rf.printfLn("3From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
 			if rf.serverState != Leader {
 				rf.mu.Unlock()
 				return false, nil
@@ -623,7 +669,7 @@ func AppendEntriesRoutine(rf *Raft, i int) (bool, *AppendEntriesReply) {
 				return false, nil
 			}
 			rf.nextIndex[i]--
-			rf.printfLn("From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
+			rf.printfLn("4From %d, "+reply.ToString()+", prevLogIndex=%d", i, prevLogIndex)
 			rf.mu.Unlock()
 			return AppendEntriesRoutine(rf, i)
 		}
@@ -662,11 +708,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Receiver implementation:
 	// 1. 如果 leader 的任期小于自己的任期返回 false。(5.1)
 	// 2. 如果本地 voteFor 为空，候选者日志和本地日志相同， 则投票给该候选者 (5.2 和 5.4)
-	rf.printfLn("Request Vote from %d in term %d", args.CandidateId, args.Term)
+	//rf.printfLn("Request Vote from %d in term %d", args.CandidateId, args.Term)
 	rf.mu.Lock()
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
+
+		rf.persist()
 		rf.mu.Unlock()
 	} else if args.Term > rf.currentTerm {
 		if rf.serverState != Follower {
@@ -686,19 +734,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				// 拒绝投票
 				reply.Term = rf.currentTerm
 				reply.VoteGranted = false
-				rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
+				//rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
 			} else {
 				rf.votedFor = args.CandidateId
 				reply.Term = rf.currentTerm
 				reply.VoteGranted = true
-				rf.printfLn("%d Vote For %d", rf.me, args.CandidateId)
+				//rf.printfLn("%d Vote For %d", rf.me, args.CandidateId)
 			}
 		} else {
 			// 拒绝投票
 			reply.Term = rf.currentTerm
 			reply.VoteGranted = false
-			rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
+			//rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
 		}
+
+		rf.persist()
 		rf.mu.Unlock()
 	} else {
 		if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
@@ -708,19 +758,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				// 拒绝投票
 				reply.Term = rf.currentTerm
 				reply.VoteGranted = false
-				rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
+				//rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
 			} else {
 				rf.votedFor = args.CandidateId
 				reply.Term = rf.currentTerm
 				reply.VoteGranted = true
-				rf.printfLn("%d Vote For %d", rf.me, args.CandidateId)
+				//rf.printfLn("%d Vote For %d", rf.me, args.CandidateId)
 			}
 		} else {
 			// 拒绝投票
 			reply.Term = rf.currentTerm
 			reply.VoteGranted = false
-			rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
+			//rf.printfLn("%d Refuse Vote For %d", rf.me, args.CandidateId)
 		}
+
+		rf.persist()
 		rf.mu.Unlock()
 	}
 }
@@ -792,6 +844,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	newIdx := len(rf.log) - 1
 	newTermId := rf.currentTerm
 
+	rf.persist()
 	rf.mu.Unlock()
 
 	// response to client, 写一个循环，检查commitId, 回应客户端...
@@ -812,7 +865,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					rf.mu.Unlock()
 					_ok, _ := AppendEntriesRoutine(rf, i)
 					ok = _ok
-					rf.printfLn("SEND Index %d =============================", len(rf.log)-1)
+					//rf.printfLn("SEND Index %d =============================", len(rf.log)-1)
 					// 重试
 					if !ok {
 						time.Sleep(10 * time.Millisecond)
@@ -901,7 +954,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyChan = applyCh
 
 	// initialize from state persisted before a crash
+	rf.mu.Lock()
 	rf.readPersist(persister.ReadRaftState())
+	rf.mu.Unlock()
 
 	// 启动goroutine, 做状态转移
 	rf.printfLn("Inited peer")
@@ -918,14 +973,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					_command := rf.log[rf.lastApplied].Command
 					_logIndex := rf.lastApplied
 					rf.mu.Unlock()
-					rf.printfLn("**** Try Apply Apply: %v: %v", _logIndex, _command)
+					//rf.printfLn("**** Try Apply Apply: %v: %v", _logIndex, _command)
 
 					rf.applyChan <- ApplyMsg{
 						CommandValid: true,
 						Command:      _command,
 						CommandIndex: _logIndex,
 					}
-					rf.printfLn("**** Apply: %v: %v", _logIndex, _command)
+					//rf.printfLn("**** Apply: %v: %v", _logIndex, _command)
 
 				} else {
 					rf.mu.Unlock()
